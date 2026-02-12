@@ -125,8 +125,10 @@ Works great on Unraid. Set it up as a Docker container:
 
 1. **Network Type**: Host
 2. **WebUI**: `http://[IP]:8765`
-3. **Path**: Map `/data` to `/mnt/user/appdata/badping`
+3. **Path**: Map `/data` to `/mnt/cache/appdata/badping` (use cache drive, not user share)
 4. **Extra Parameters**: `--cap-add=NET_RAW --cap-add=NET_ADMIN`
+
+**Important**: Use `/mnt/cache/appdata/` instead of `/mnt/user/appdata/` for the data path. Unraid's user shares run on a FUSE filesystem that doesn't play well with SQLite. Mapping to the cache drive directly avoids this. The app will detect and handle it either way, but cache drive gives better performance.
 
 <details>
 <summary>Community Apps XML template</summary>
@@ -135,16 +137,16 @@ Works great on Unraid. Set it up as a Docker container:
 <?xml version="1.0"?>
 <Container version="2">
   <Name>BadPing</Name>
-  <Repository>YOUR_DOCKERHUB/badping</Repository>
-  <Registry>https://hub.docker.com/r/YOUR_DOCKERHUB/badping</Registry>
+  <Repository>ll0rd/badping</Repository>
+  <Registry>https://hub.docker.com/r/ll0rd/badping</Registry>
   <Network>host</Network>
   <Shell>bash</Shell>
   <Privileged>false</Privileged>
-  <Support>https://github.com/YOUR_USERNAME/badping/issues</Support>
+  <Support>https://github.com/LL0rd/badping/issues</Support>
   <Overview>Network monitoring tool that pings devices via ICMP and ARP to track latency and packet loss across your network.</Overview>
   <Category>Network:Management Tools:</Category>
   <WebUI>http://[IP]:8765</WebUI>
-  <Icon>https://raw.githubusercontent.com/YOUR_USERNAME/badping/main/frontend/public/favicon.svg</Icon>
+  <Icon>https://raw.githubusercontent.com/LL0rd/badping/main/frontend/public/favicon.svg</Icon>
   <ExtraParams>--cap-add=NET_RAW --cap-add=NET_ADMIN</ExtraParams>
   <Config Name="Data Path" Target="/data" Default="/mnt/user/appdata/badping" Mode="rw" Description="Database storage" Type="Path" Display="always" Required="true">/mnt/user/appdata/badping</Config>
   <Config Name="WebUI Port" Target="8765" Default="8765" Mode="tcp" Description="Web interface port" Type="Port" Display="always" Required="true">8765</Config>
