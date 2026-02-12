@@ -1,0 +1,18 @@
+services:
+  badping:
+    build: .
+    container_name: badping
+    ports:
+      - "8765:8765"
+    volumes:
+      - badping-data:/data
+    environment:
+      - BADPING_DB_PATH=/data/badping.db
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    network_mode: host
+    restart: unless-stopped
+
+volumes:
+  badping-data:

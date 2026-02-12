@@ -1,0 +1,11 @@
+fastapi>=0.115.6
+uvicorn[standard]>=0.34.0
+sqlalchemy[asyncio]>=2.0.36
+aiosqlite>=0.20.0
+pydantic>=2.10.3
+pydantic-settings>=2.7.0
+icmplib>=3.0.4
+scapy>=2.6.1
+python-nmap>=0.7.1
+python-multipart>=0.0.19
+netifaces2>=0.0.22

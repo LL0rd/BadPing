@@ -1,0 +1,12 @@
+node_modules
+.nuxt
+.output
+__pycache__
+*.pyc
+.git
+.gitignore
+data/
+*.db
+.env
+.vscode
+.idea
