@@ -48,14 +48,18 @@ async def get_stats(device_id: int, session: AsyncSession = Depends(get_session)
         lost = row.lost or 0
         return round(lost / total * 100, 2) if total > 0 else 0.0
 
+    total_24 = r24.total or 0
+    lost_24 = r24.lost or 0
+
     return StatsResponse(
         device_id=device_id,
         stats_6h=pct(r6),
         stats_12h=pct(r12),
         stats_24h=pct(r24),
         stats_48h=pct(r48),
-        total_pings_24h=r24.total or 0,
-        lost_pings_24h=r24.lost or 0,
+        total_pings_24h=total_24,
+        lost_pings_24h=lost_24,
+        ok_pings_24h=total_24 - lost_24,
         avg_latency_24h=round(r24.avg, 3) if r24.avg else None,
         min_latency_24h=round(r24.min, 3) if r24.min else None,
         max_latency_24h=round(r24.max, 3) if r24.max else None,
@@ -157,7 +161,17 @@ async def clear_data(device_id: int, session: AsyncSession = Depends(get_session
     result = await session.execute(
         delete(PingResult).where(PingResult.device_id == device_id)
     )
+    # Reset device status
+    device.status = "unknown"
+    device.last_seen_at = None
     await session.commit()
+
+    # Reset monitor service counters for this device
+    from ..services.monitor_service import MonitorService
+    monitor = MonitorService()
+    monitor._consecutive_success.pop(device_id, None)
+    monitor._consecutive_fail.pop(device_id, None)
+
     return {"ok": True, "deleted": result.rowcount}
 
 

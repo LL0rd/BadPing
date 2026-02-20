@@ -10,6 +10,7 @@ const props = defineProps<{
     stats_48h: number
     total_pings_24h: number
     lost_pings_24h: number
+    ok_pings_24h: number
     avg_latency_24h: number | null
     min_latency_24h: number | null
     max_latency_24h: number | null
@@ -88,13 +89,17 @@ function fmtLatency(v: number | null): string {
     <div class="rounded-xl border border-border bg-card p-4">
       <div class="mb-2 flex items-center gap-2 text-muted-foreground">
         <AlertTriangle class="h-4 w-4" />
-        <span class="text-xs font-medium uppercase tracking-wider">Lost (24h)</span>
+        <span class="text-xs font-medium uppercase tracking-wider">Results (24h)</span>
       </div>
-      <div class="mt-3">
-        <div class="text-2xl font-bold" :class="stats.lost_pings_24h === 0 ? 'text-green-500' : 'text-red-500'">
-          {{ stats.lost_pings_24h.toLocaleString() }}
+      <div class="mt-1 space-y-1 text-sm">
+        <div class="flex justify-between">
+          <span class="text-muted-foreground">OK</span>
+          <span class="font-mono font-medium text-green-500">{{ stats.ok_pings_24h.toLocaleString() }}</span>
         </div>
-        <div class="text-xs text-muted-foreground">packets lost</div>
+        <div class="flex justify-between">
+          <span class="text-muted-foreground">Lost</span>
+          <span class="font-mono font-medium" :class="stats.lost_pings_24h === 0 ? 'text-green-500' : 'text-red-500'">{{ stats.lost_pings_24h.toLocaleString() }}</span>
+        </div>
       </div>
     </div>
   </div>

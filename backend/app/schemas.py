@@ -132,6 +132,7 @@ class StatsResponse(BaseModel):
     stats_48h: float
     total_pings_24h: int
     lost_pings_24h: int
+    ok_pings_24h: int
     avg_latency_24h: float | None
     min_latency_24h: float | None
     max_latency_24h: float | None

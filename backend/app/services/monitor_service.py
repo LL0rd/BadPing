@@ -14,6 +14,8 @@ from .ping_service import icmp_ping
 
 logger = logging.getLogger(__name__)
 
+WATCHDOG_INTERVAL = 30  # seconds between watchdog checks
+
 
 class MonitorService:
     _instance = None
@@ -32,11 +34,14 @@ class MonitorService:
         self._write_buffer: list[dict] = []
         self._buffer_lock = asyncio.Lock()
         self._flush_task: asyncio.Task | None = None
+        self._watchdog_task: asyncio.Task | None = None
         self._consecutive_success: dict[int, int] = defaultdict(int)
         self._consecutive_fail: dict[int, int] = defaultdict(int)
+        self._last_ping_time: dict[int, float] = {}
 
     async def start(self) -> None:
         self._flush_task = asyncio.create_task(self._flush_loop())
+        self._watchdog_task = asyncio.create_task(self._watchdog_loop())
         async with async_session() as session:
             result = await session.execute(
                 select(Device).where(Device.monitoring_enabled == True)  # noqa: E712
@@ -49,15 +54,18 @@ class MonitorService:
     async def stop(self) -> None:
         if self._flush_task:
             self._flush_task.cancel()
+        if self._watchdog_task:
+            self._watchdog_task.cancel()
         for task in self._tasks.values():
             task.cancel()
         self._tasks.clear()
         await self._flush_buffer()
 
     def start_device(self, device_id: int) -> None:
-        if device_id in self._tasks:
+        if device_id in self._tasks and not self._tasks[device_id].done():
             return
         self._tasks[device_id] = asyncio.create_task(self._monitor_device(device_id))
+        self._last_ping_time[device_id] = time.time()
         logger.info("Started monitoring device %d", device_id)
 
     async def stop_device(self, device_id: int) -> None:
@@ -70,22 +78,25 @@ class MonitorService:
                 pass
         self._consecutive_success.pop(device_id, None)
         self._consecutive_fail.pop(device_id, None)
+        self._last_ping_time.pop(device_id, None)
         logger.info("Stopped monitoring device %d", device_id)
 
     def is_monitoring(self, device_id: int) -> bool:
-        return device_id in self._tasks
+        return device_id in self._tasks and not self._tasks[device_id].done()
 
     async def restart_device(self, device_id: int) -> None:
         await self.stop_device(device_id)
         self.start_device(device_id)
 
     async def _monitor_device(self, device_id: int) -> None:
-        try:
-            while True:
+        error_count = 0
+        while True:
+            try:
                 async with async_session() as session:
                     device = await session.get(Device, device_id)
                     if not device or not device.monitoring_enabled:
-                        break
+                        logger.info("Device %d disabled or deleted, stopping monitor", device_id)
+                        return
 
                     interval = device.interval_seconds
                     ping_type = device.ping_type
@@ -108,13 +119,97 @@ class MonitorService:
                 async with self._buffer_lock:
                     self._write_buffer.extend(results)
 
+                self._last_ping_time[device_id] = time.time()
                 await self._update_status(device_id, results)
+
+                # Reset error count on success
+                error_count = 0
                 await asyncio.sleep(interval)
 
-        except asyncio.CancelledError:
-            pass
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                error_count += 1
+                backoff = min(error_count * 5, 60)
+                logger.exception(
+                    "Monitor error for device %d (attempt %d), retrying in %ds",
+                    device_id, error_count, backoff,
+                )
+                await asyncio.sleep(backoff)
+
+    async def _watchdog_loop(self) -> None:
+        """Periodically check that all monitoring tasks are alive and restart dead ones."""
+        while True:
+            try:
+                await asyncio.sleep(WATCHDOG_INTERVAL)
+                await self._check_tasks()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception("Watchdog error")
+
+    async def _check_tasks(self) -> None:
+        now = time.time()
+
+        # Find devices that should be monitored
+        try:
+            async with async_session() as session:
+                result = await session.execute(
+                    select(Device.id, Device.interval_seconds).where(
+                        Device.monitoring_enabled == True  # noqa: E712
+                    )
+                )
+                active_devices = {row.id: row.interval_seconds for row in result.all()}
         except Exception:
-            logger.exception("Monitor error for device %d", device_id)
+            logger.exception("Watchdog: failed to query devices")
+            return
+
+        restarted = 0
+
+        for device_id, interval in active_devices.items():
+            task = self._tasks.get(device_id)
+
+            # Task doesn't exist or has finished (crashed)
+            if task is None or task.done():
+                if task and task.done() and not task.cancelled():
+                    exc = task.exception()
+                    if exc:
+                        logger.warning(
+                            "Watchdog: device %d task died with: %s", device_id, exc
+                        )
+                logger.info("Watchdog: restarting dead task for device %d", device_id)
+                self._tasks[device_id] = asyncio.create_task(self._monitor_device(device_id))
+                self._last_ping_time[device_id] = now
+                restarted += 1
+                continue
+
+            # Task exists but hasn't pinged in too long (stuck)
+            last_ping = self._last_ping_time.get(device_id, now)
+            stale_threshold = max(interval * 10, 30)  # 10x interval or 30s, whichever is larger
+            if now - last_ping > stale_threshold:
+                logger.warning(
+                    "Watchdog: device %d task appears stuck (no ping for %.0fs), restarting",
+                    device_id, now - last_ping,
+                )
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                self._tasks[device_id] = asyncio.create_task(self._monitor_device(device_id))
+                self._last_ping_time[device_id] = now
+                restarted += 1
+
+        # Clean up tasks for devices that are no longer monitored
+        stale_ids = [did for did in self._tasks if did not in active_devices]
+        for device_id in stale_ids:
+            task = self._tasks.pop(device_id)
+            task.cancel()
+            self._last_ping_time.pop(device_id, None)
+            logger.info("Watchdog: cleaned up task for disabled device %d", device_id)
+
+        if restarted:
+            logger.info("Watchdog: restarted %d monitoring tasks", restarted)
 
     async def _update_status(self, device_id: int, results: list[dict]) -> None:
         if not results:
@@ -150,6 +245,24 @@ class MonitorService:
                     new_status = "offline"
                 elif old_status == "online":
                     new_status = "degraded"
+            elif old_status == "degraded" and any_success:
+                # Recover from degraded: check recent loss rate from DB
+                window_start = time.time() - settings.degraded_window_seconds
+                from sqlalchemy import Integer, func, select as sa_select
+                row = (await session.execute(
+                    sa_select(
+                        func.count().label("total"),
+                        func.sum(PingResult.packet_lost.cast(Integer)).label("lost"),
+                    ).where(
+                        PingResult.device_id == device_id,
+                        PingResult.timestamp >= window_start,
+                    )
+                )).one()
+                total = row.total or 0
+                lost = row.lost or 0
+                loss_pct = (lost / max(1, total)) * 100
+                if loss_pct < settings.degraded_loss_pct:
+                    new_status = "online"
             elif old_status == "unknown" and not any_success:
                 fail_duration = self._consecutive_fail[device_id] * device.interval_seconds
                 if fail_duration >= settings.offline_loss_seconds:
@@ -175,7 +288,7 @@ class MonitorService:
                 await asyncio.sleep(settings.batch_write_interval)
                 await self._flush_buffer()
             except asyncio.CancelledError:
-                break
+                return
             except Exception:
                 logger.exception("Flush error")
 
